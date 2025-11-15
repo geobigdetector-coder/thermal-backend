@@ -8,7 +8,7 @@ from scipy.interpolate import griddata
 from io import BytesIO
 import base64
 
-app = Flask(_name_)
+app = Flask(__name__)
 
 @app.post("/generate")
 def generate():
@@ -210,3 +210,4 @@ def home():
 if _name_ == "_main_":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
