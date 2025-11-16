@@ -40,7 +40,10 @@ def create_geology_plot(report_data):
         
     depth_min = 0
     surface_x_min, surface_x_max = 1, 7
-    grid_res = 400 # 400 is a good resolution for quality
+    
+    # --- OPTIMIZATION 1: Reduced grid resolution ---
+    grid_res = 200 # Was 400. This saves 75% of memory for numpy arrays.
+    # --- END OPTIMIZATION ---
 
     # Geological & aquifer configuration (from scanResults)
     scan_results = report_data.get('scanResults', [])
@@ -314,7 +317,11 @@ def create_geology_plot(report_data):
 
     # === 3. SAVE PLOT TO IN-MEMORY BUFFER ===
     buf = io.BytesIO()
-    fig.savefig(buf, format='png', dpi=300, bbox_inches='tight')
+    
+    # --- OPTIMIZATION 2: Reduced DPI for rendering ---
+    fig.savefig(buf, format='png', dpi=96, bbox_inches='tight') # Was 300. This is the biggest memory saver.
+    # --- END OPTIMIZATION ---
+
     buf.seek(0)
     
     # === 4. ENCODE TO BASE64 AND CLEAN UP ===
