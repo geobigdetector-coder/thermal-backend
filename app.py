@@ -153,11 +153,7 @@ def create_geology_plot(report_data):
     ax1.text(4.2, physical_to_plot(min(185, depth_max - 15)), "Water-Bearing Layer", color="navy", fontsize=11, fontweight="bold",
              bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=0.5))
 
-    # === SCALE BARS ===
-    ax1.plot([1, 1], [0, depth_max], color='black', lw=1.2)
-    ax1.text(0.7, depth_max/2, "Depth (ft)", rotation=90, fontsize=9, color="black", va="center", ha="center")
-    ax1.hlines(y=depth_max + (depth_max * 0.06), xmin=1, xmax=7, color='black', lw=1.2)
-    ax1.text(4.0, depth_max + (depth_max * 0.08), "Surface Distance (~6 m)", fontsize=9, ha="center")
+  
 
     # === LEGEND ===
     legend_patches = [
@@ -362,3 +358,4 @@ if __name__ == '__main__':
     # Runs the server on localhost:5000
     # For production (like on Render), a Gunicorn server is used instead
     app.run(debug=True, host='0.0.0.0', port=5000)
+
