@@ -1,85 +1,75 @@
-import os
-from flask import Flask, request, jsonify
-import matplotlib
-matplotlib.use('Agg') # Set backend for server
-import matplotlib.pyplot as plt
-import numpy as np
-from scipy.interpolate import griddata
-from io import BytesIO
+import io
 import base64
-
-# --- Imports from your new script ---
+from flask import Flask, request, jsonify
+import numpy as np
+import matplotlib.pyplot as plt
 from matplotlib.colors import LightSource
-from scipy.ndimage import gaussian_filter, minimum_filter
-from matplotlib import patheffects
+from scipy.ndimage import gaussian_filter
 from matplotlib.patches import Patch
-# --- End new imports ---
+import matplotlib
+matplotlib.use('Agg') # Use 'Agg' backend for non-GUI server environment
 
+# === FLASK APP INITIALIZATION ===
 app = Flask(__name__)
 
-@app.get("/")
-def home():
-    return "Python Plot Generator Running!"
-
-@app.post("/generate")
-def generate():
+# === MAIN PLOTTING FUNCTION (ADAPTED FROM YOUR SCRIPT) ===
+def create_geology_plot(report_data):
+    """
+    Generates the earth depth profile plot based on dynamic report data.
+    """
     
-    # === 1. GET DYNAMIC DATA FROM FLUTTER APP ===
+    # === 1. EXTRACT DYNAMIC DATA FROM THE FLUTTER APP'S JSON ===
+    
+    # Site metadata
+    site_name = report_data.get('customerName', 'Survey Site')
+    location = report_data.get('location', {})
     try:
-        data = request.get_json()
-        if data is None: data = {}
-    except Exception as e:
-        print(f"Could not parse JSON: {e}")
-        data = {}
+        latitude = float(location.get('latitude', 18.4645343))
+    except (ValueError, TypeError):
+        latitude = 18.4645343
+    try:
+        longitude = float(location.get('longitude', 73.8294))
+    except (ValueError, TypeError):
+        longitude = 73.8294
 
-    # Extract dynamic values, using your script's values as defaults
-    
-    # --- DYNAMIC SITE NAME ---
-    customer = data.get('customerName', 'N/A')
-    surveyor = data.get('surveyorName', 'N/A')
-    site_name = f"Customer: {customer}, Surveyor: {surveyor}"
-    
-    # --- DYNAMIC LOCATION ---
-    location = data.get('location', {})
-    latitude = float(location.get('latitude', 18.4645343)) # Default from your script
-    longitude = float(location.get('longitude', 73.8294))  # Default from your script
-
-    # --- DYNAMIC DEPTH ---
+    # Configuration
+    try:
+        depth_max = int(report_data.get('selectedDepthFt', 200))
+    except (ValueError, TypeError):
+        depth_max = 200
+        
     depth_min = 0
-    depth_max = int(data.get('selectedDepthFt', 200)) # Use app's max depth, default 200
-    
-    # --- DYNAMIC WATER LAYERS (THE 3 DEPTHS) ---
-    scanResults = data.get('scanResults', [])
-    water_layers = []
-    if scanResults:
-        for result in scanResults:
-            try:
-                # Add the depth from each scan result
-                water_layers.append(float(result.get('depth')))
-            except (ValueError, TypeError):
-                pass # Ignore if depth is not a valid number
-    
-    # Fallback: If app sent no depths, use your script's defaults
-    if not water_layers:
-        water_layers = [25, 100, 160] # Default from your script
-
-    print(f"Generating plot for {site_name} with max_depth={depth_max} and layers at {water_layers}")
-
-    # =================================================================
-    # === YOUR PLOTTING SCRIPT (UNCHANGED UI) ===
-    # =================================================================
-
-    # === CONFIGURATION ===
-    np.random.seed(42)
-    # depth_min, depth_max = 0, 200  (NOW DYNAMIC)
     surface_x_min, surface_x_max = 1, 7
-    grid_res = 400
+    grid_res = 400 # 400 is a good resolution for quality
 
-    # Geological & aquifer configuration
-    # water_layers = [25, 100, 160] (NOW DYNAMIC)
+    # Geological & aquifer configuration (from scanResults)
+    scan_results = report_data.get('scanResults', [])
+    water_layers = []
+    resistivity_at_layers = []
+    frequency_at_layers = []
+    
+    for r in scan_results:
+        try:
+            water_layers.append(int(r['depth']))
+            resistivity_at_layers.append(float(r['resistivity']))
+            frequency_at_layers.append(float(r['frequency']))
+        except (ValueError, TypeError, KeyError):
+            continue # Skip invalid records
+
+    # Fallback if no valid scan results are provided
+    if not water_layers:
+        water_layers = [25, 100, 160] # Default depths
+        # Use default res/freq if using default depths
+        resistivity_at_layers = [np.random.uniform(55, 150) for _ in water_layers]
+        frequency_at_layers = [np.random.uniform(700, 900) for _ in water_layers]
+
+    # Use data from your script's config
     fracture_intensity = 0.28
     dip_angle_deg = 7
     dip_tilt_factor = np.tan(np.radians(dip_angle_deg))
+    np.random.seed(42) # Keep seed for reproducible patterns
+
+    # === 2. GEOLOGY & PLOTTING LOGIC (FROM YOUR SCRIPT) ===
 
     # === GRID ===
     depth_grid = np.linspace(depth_min, depth_max, grid_res)
@@ -128,160 +118,240 @@ def generate():
     ls = LightSource(azdeg=315, altdeg=45)
     rgb = ls.shade(data, cmap=plt.cm.jet, vert_exag=0.1, blend_mode='soft')
 
-    # === PLOT ===
-    fig, ax = plt.subplots(figsize=(12, 8))
-    im = ax.imshow(rgb, extent=[surface_x_min, surface_x_max, depth_max, depth_min], aspect='auto')
+    # === CREATE FIGURE WITH TWO SUBPLOTS ===
+    # Use 'fig' to manage the figure object
+    fig = plt.figure(figsize=(12, 13.5), dpi=100) 
+
+    # === PLOT 1: RESISTIVITY MAP (TOP) ===
+    ax1 = plt.subplot(2, 1, 1)
+    im = ax1.imshow(rgb, extent=[surface_x_min, surface_x_max, depth_min, depth_max], aspect='auto')
 
     # === ADD CONTOURS ===
     contour_levels = np.linspace(100, 900, 10)
-    cs = ax.contour(X, Z, data, levels=contour_levels, colors='black', linewidths=0.4, alpha=0.35)
-    ax.clabel(cs, inline=True, fontsize=7, fmt='%d', colors='black')
+    cs = ax1.contour(X, Z, data, levels=contour_levels, colors='black', linewidths=0.4, alpha=0.35)
+    ax1.clabel(cs, inline=True, fontsize=7, fmt='%d', colors='black')
 
     # === COLORBAR ===
     sm = plt.cm.ScalarMappable(cmap='jet', norm=plt.Normalize(vmin=55, vmax=1000))
-    cbar = fig.colorbar(sm, ax=ax, fraction=0.035, pad=0.08, orientation='horizontal', shrink=0.7)
+    cbar = plt.colorbar(sm, ax=ax1, fraction=0.035, pad=0.08, orientation='horizontal', shrink=0.7)
     cbar.set_label("Resistivity (Ω·m)", fontsize=11)
 
     # === GEOLOGICAL LABELS ===
-    ax.text(2.0, 20, "Hard Rock", color="darkred", fontsize=11, fontweight="bold")
-    ax.text(2.5, 60, "Soft Rock", color="orange", fontsize=11, fontweight="bold")
-    ax.text(4.0, 130, "Moist Zone", color="green", fontsize=11, fontweight="bold")
-    ax.text(4.5, 190, "Water-Bearing Layer", color="navy", fontsize=11, fontweight="bold")
+    def physical_to_plot(physical_depth):
+        return depth_max - physical_depth # Convert physical depth to plot Y-coord
+        
+    ax1.text(1.8, physical_to_plot(25), "Hard Rock", color="darkred", fontsize=11, fontweight="bold", 
+             bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=0.5))
+    ax1.text(2.2, physical_to_plot(65), "Soft Rock", color="orange", fontsize=11, fontweight="bold",
+             bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=0.5))
+    ax1.text(3.7, physical_to_plot(125), "Moist Zone", color="green", fontsize=11, fontweight="bold",
+             bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=0.5))
+    # Adjust last label based on max_depth
+    ax1.text(4.2, physical_to_plot(min(185, depth_max - 15)), "Water-Bearing Layer", color="navy", fontsize=11, fontweight="bold",
+             bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=0.5))
 
     # === SCALE BARS ===
-    ax.plot([1, 1], [0, 200], color='black', lw=1.2)
-    ax.text(0.5, 200, "Depth (ft)", rotation=90, fontsize=9, color="black", va="top")
-    ax.hlines(y=210, xmin=1, xmax=7, color='black', lw=1.2)
-    ax.text(3.5, 214, "Surface Distance (~6 m)", fontsize=9, ha="center")
+    ax1.plot([1, 1], [0, depth_max], color='black', lw=1.2)
+    ax1.text(0.7, depth_max/2, "Depth (ft)", rotation=90, fontsize=9, color="black", va="center", ha="center")
+    ax1.hlines(y=depth_max + (depth_max * 0.06), xmin=1, xmax=7, color='black', lw=1.2)
+    ax1.text(4.0, depth_max + (depth_max * 0.08), "Surface Distance (~6 m)", fontsize=9, ha="center")
 
-    # === LEGEND (Moved to Right Side) ===
+    # === LEGEND ===
     legend_patches = [
         Patch(color='darkred', label='Hard Rock (High Resistivity)'),
         Patch(color='orange', label='Soft Rock / Sand (Medium Resistivity)'),
         Patch(color='green', label='Moist Zone (Moderate Resistivity)'),
         Patch(color='blue', label='Water-Bearing Layer (Low Resistivity)'),
     ]
-
-    legend = ax.legend(
-        handles=legend_patches,
-        loc='upper right',
-        bbox_to_anchor=(1.0, 0.25),
-        fontsize=9,
-        frameon=True,
-        fancybox=True,
-        shadow=False,
-        borderpad=0.8,
-        labelspacing=0.7
+    legend = ax1.legend(
+        handles=legend_patches, loc='upper right', bbox_to_anchor=(0.98, 0.35),
+        fontsize=9, frameon=True, fancybox=True, shadow=False,
+        borderpad=0.8, labelspacing=0.7
     )
     legend.get_frame().set_facecolor('white')
     legend.get_frame().set_alpha(0.9)
     legend.set_zorder(20)
 
-    # === DETECTED WATER POINTS (Pixel-Perfect: Darkest Blue Only) ===
-    for i, target_depth in enumerate(water_layers, start=1):
-        # Define search window: tight vertical range (±4 ft), full x-range
-        z_min = max(0, target_depth - 4)
-        z_max = min(depth_max, target_depth + 4)
-        z_mask = (Z >= z_min) & (Z <= z_max)
+    # === PRECISE WATER POINTS DETECTION ===
+    # Use the actual depths and resistivity values from the app
+    for i, (target_depth, target_res) in enumerate(zip(water_layers, resistivity_at_layers), start=1):
+        target_idx = np.argmin(np.abs(depth_grid - target_depth))
+        window_size = 15
+        start_idx = max(0, target_idx - window_size)
+        end_idx = min(grid_res - 1, target_idx + window_size)
+        window_data = data[start_idx:end_idx + 1, :]
         
-        # CRITICAL: Only consider pixels below 180 Ω·m (darkest blue threshold)
-        dark_blue_mask = (data <= 180) & z_mask
+        # Find the actual minimum in the window, but use the app's resistivity for the label
+        min_idx_flat = np.argmin(window_data)
+        z_rel_idx, x_idx = np.unravel_index(min_idx_flat, window_data.shape)
+        z_idx = start_idx + z_rel_idx
         
-        if np.any(dark_blue_mask):
-            # Get coordinates of ALL darkest pixels
-            dark_pixels = data[dark_blue_mask]
-            z_coords = Z[dark_blue_mask]
-            x_coords = X[dark_blue_mask]
-            
-            # Find absolute minimum resistivity in this zone
-            min_val = np.min(dark_pixels)
-            min_indices = np.where(dark_pixels == min_val)[0]
-            
-            # If multiple darkest pixels, pick the one closest to center x=4.0
-            if len(min_indices) > 1:
-                distances = np.abs(x_coords[min_indices] - 4.0)
-                best_idx = min_indices[np.argmin(distances)]
-            else:
-                best_idx = min_indices[0]
-            
-            x_point = x_coords[best_idx]
-            z_point = z_coords[best_idx]
+        x_point = surface_x_grid[x_idx]
+        z_point = depth_grid[z_idx] # This is the "detected" physical depth
+        plot_y = depth_max - z_point # This is the Y-coord for plotting
+        
+        x_point = np.clip(x_point, surface_x_min + 0.3, surface_x_max - 0.3)
+        plot_y = np.clip(plot_y, 10, depth_max - 10)
+        
+        ax1.scatter(x_point, plot_y, s=110, color='white', edgecolors='black',
+                    linewidths=1.8, zorder=15, marker='*', alpha=0.95)
+        
+        label_offset = (i - 2) * 18
+        
+        if x_point < 4.0:
+            x_label = x_point + 1.2
+            ha = 'left'
+            ax1.plot([x_point, x_label - 0.3], [plot_y, plot_y + label_offset],
+                     color='black', lw=1.3, ls='-', alpha=0.8, zorder=14)
         else:
-            # Fallback: find global minimum in vertical window
-            window_data = np.where(z_mask, data, np.inf)
-            min_idx = np.unravel_index(np.argmin(window_data), window_data.shape)
-            x_point = X[min_idx]
-            z_point = Z[min_idx]
-
-        # PLOT MARKER AT EXACT DARKEST PIXEL
-        ax.scatter(x_point, z_point, s=90, color='cyan', edgecolors='white',
-                   linewidths=1.2, zorder=12, marker='*', alpha=0.95)
+            x_label = x_point - 1.2
+            ha = 'right'
+            ax1.plot([x_label + 0.3, x_point], [plot_y + label_offset, plot_y],
+                     color='black', lw=1.3, ls='-', alpha=0.8, zorder=14)
         
-        # ENHANCED LABEL PLACEMENT
-        x_label = min(x_point + 1.3, 6.3)
-        z_label = z_point
-        
-        # SUBTLE CONNECTOR (cyan for visibility)
-        ax.plot([x_label - 0.15, x_point], [z_label, z_point],
-                color='cyan', lw=1.1, ls='-', alpha=0.85, zorder=11)
-        
-        # BOLD LABEL WITH WHITE OUTLINE (FIXED SYNTAX)
-        ax.text(x_label, z_label,
-                f"Water Point {i} : {int(target_depth)} ft",
-                color="navy", fontsize=10.5, weight="bold",
-                va="center", ha="left", zorder=12,
-                path_effects=[patheffects.withStroke(linewidth=1.5, foreground='white')])
+        # Use the app's resistivity data in the label
+        ax1.text(x_label, plot_y + label_offset,
+                 f"WP{i}: {int(target_depth)} ft\n({int(target_res)} Ω·m)",
+                 color="black", fontsize=9.5, weight="bold",
+                 va="center", ha=ha, zorder=15,
+                 bbox=dict(facecolor='yellow', alpha=0.85, edgecolor='black', boxstyle='round,pad=0.3'))
 
-    # === TITLES (NOW DYNAMIC) ===
-    ax.set_title(f"Earth Depth Profile – {site_name}\nLat: {latitude:.6f}, Lon: {longitude:.6f}\n7° Eastward Dip & Resistivity Map",
-                 fontsize=14, weight="bold", pad=14)
-    ax.set_xlabel("Surface-X (m/f)", fontsize=11)
-    ax.set_ylabel("Depth-Z (ft)", fontsize=11)
-    ax.invert_yaxis()
+    # === TITLES & AXES FOR RESISTIVITY PLOT ===
+    ax1.set_title(f"Earth Depth Profile – {site_name}\nLat: {latitude:.6f}, Lon: {longitude:.6f}\n7° Eastward Dip & Resistivity Map",
+                  fontsize=14, weight="bold", pad=18)
+    ax1.set_xlabel("Surface-X (m/f)", fontsize=11)
+    ax1.set_ylabel("Depth (ft)", fontsize=11)
 
-    # === INTERPRETATION TABLE ===
-    table_text = (
-        "Resistivity Interpretation Table\n"
-        "────────────────────────────────────────\n"
-        "Value Range | Interpretation | Typical Rock Type\n"
-        "100–200  →  Very low resistivity → Water-bearing, wet clay, fractured rock\n"
-        "300–400  →  Low–medium resistivity → Moist sand, partially saturated soil\n"
-        "500–700  →  Moderate resistivity → Compact soil, semi-hard rock, dry layers\n"
-        "800–900  →  High resistivity → Hard igneous rock, dry basement"
-    )
-
-    plt.figtext(
-        0.5, 0.03,
-        table_text,
-        wrap=True,
-        horizontalalignment='center',
-        fontsize=9,
-        fontfamily='monospace',
-        bbox=dict(facecolor='white', alpha=0.95, edgecolor='gray', boxstyle='round,pad=0.5')
-    )
-
-    # Final layout adjustments
-    plt.subplots_adjust(bottom=0.2, top=0.93, right=0.82)
-    plt.tight_layout(rect=[0, 0.1, 1, 1])
-
-    # =================================================================
-    # === SERVER CONVERSION (No UI Change) ===
-    # =================================================================
+    # Set Y-axis ticks to match the max_depth
+    tick_interval = 50 if depth_max >= 150 else 25
+    y_ticks = np.arange(0, depth_max + 1, tick_interval)
+    y_tick_labels = [str(int(depth_max - y)) for y in y_ticks]
     
-    # Convert plot to PNG in memory
-    buf = BytesIO()
-    fig.savefig(buf, format="png", dpi=150) # Use fig.savefig
-    plt.close(fig) # Must close figure to prevent memory leak
+    ax1.set_ylim(0, depth_max)
+    ax1.set_yticks(y_ticks)
+    ax1.set_yticklabels(y_tick_labels)
+
+    ax1.tick_params(axis='x', which='both', bottom=False, top=False, labelbottom=False)
+    ax1.grid(False)
+
+    # === PLOT 2: FREQUENCY PLOT (BOTTOM) ===
+    ax2 = plt.subplot(2, 1, 2)
+
+    # === GENERATE SYNTHETIC FREQUENCY DATA (as in your script) ===
+    n_points = 350
+    depth_line = np.linspace(depth_min, depth_max, n_points)
+    freq = (
+        500 + 
+        100 * np.sin(depth_line * 0.15 * (200 / depth_max)) + 
+        150 * np.sin(depth_line * 0.04 * (200 / depth_max)) + 
+        80 * np.sin(depth_line * 0.25 * (200 / depth_max)) +
+        60 * np.sin(depth_line * 0.4 * (200 / depth_max)) +
+        30 * np.random.randn(n_points)
+    )
+    for i in range(1, len(freq) - 1):
+        if np.random.rand() > 0.95:
+            freq[i] = 0.5 * (freq[i-1] + freq[i+1]) + np.random.uniform(-150, 150)
+    freq = np.clip(freq, 0, 1000)
+
+    # Add specific peaks at water layer depths, using app's freq data
+    for (d, f) in zip(water_layers, frequency_at_layers):
+        if d <= depth_max: # Only plot if within range
+            idx = np.argmin(np.abs(depth_line - d))
+            freq[idx] = max(freq[idx], f, 750) # Make it a noticeable peak using app data
+
+    # === PLOT THE FREQUENCY DATA ===
+    ax2.plot(depth_line, freq, color='blue', linewidth=1.8)
+
+    # ADD PEAK MARKERS AT WATER LAYERS
+    for (d, f) in zip(water_layers, frequency_at_layers):
+         if d <= depth_max: # Only plot if within range
+            plot_f = freq[np.argmin(np.abs(depth_line - d))] # Get the actual plotted freq
+            ax2.scatter(d, plot_f, s=80, color='red', zorder=10, edgecolor='black')
+            ax2.text(d + (depth_max * 0.025), plot_f + 20, f"{d}ft", fontsize=9, color='darkred', fontweight='bold')
+
+    # === STYLE SETTINGS ===
+    ax2.set_title("Depth Vs Frequency Mapping", fontsize=14, fontweight='bold', pad=15)
+    ax2.set_xlabel("Depth (ft)", fontsize=11)
+    ax2.set_ylabel("Freq (MHz)", fontsize=11)
+    for spine in ['top', 'right']:
+        ax2.spines[spine].set_visible(False)
+    ax2.grid(True, linestyle='--', alpha=0.7)
+    ax2.set_xlim(depth_min, depth_max)
+    ax2.set_ylim(0, 1000)
+    ax2.set_xticks(y_ticks) # Use same ticks as Y-axis from plot 1
+    ax2.set_yticks([0, 200, 400, 600, 800, 1000])
+
+    # === FINAL LAYOUT ADJUSTMENTS ===
+    plt.tight_layout(rect=[0, 0.15, 1, 1])
+    plt.subplots_adjust(hspace=0.28, top=0.93)
+
+    # === ADD TABLE ===
+    table_data = [
+        ["Value Range (Ω·m)", "Interpretation", "Typical Material"],
+        ["100-200", "Very low resistivity", "Water-bearing zones, wet clay"],
+        ["300-400", "Low-medium resistivity", "Moist sand, fractured rock"],
+        ["500-700", "Moderate resistivity", "Dry soil, semi-hard rock"],
+        ["800-1000", "High resistivity", "Hard igneous rock, dry basement"]
+    ]
+    table = plt.table(
+        cellText=table_data, cellLoc='center', loc='bottom',
+        bbox=[0.05, -0.30, 0.9, 0.15], colWidths=[0.2, 0.4, 0.4]
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(9)
+    table.scale(1, 1.5)
+    for (i, j), cell in table.get_celld().items():
+        if i == 0:
+            cell.set_facecolor('#d1e5f0')
+            cell.set_text_props(weight='bold', color='navy')
+            cell.set_edgecolor('black')
+        else:
+            cell.set_edgecolor('#888888')
+        cell.set_height(0.12)
+    plt.figtext(0.5, 0.048, 'Resistivity Interpretation Guide', 
+                ha='center', fontsize=11, weight='bold', color='navy')
+
+
+    # === 3. SAVE PLOT TO IN-MEMORY BUFFER ===
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', dpi=300, bbox_inches='tight')
     buf.seek(0)
+    
+    # === 4. ENCODE TO BASE64 AND CLEAN UP ===
+    img_base64 = base64.b64encode(buf.read()).decode('utf-8')
+    plt.close(fig) # IMPORTANT: Close the figure to free up memory
+    
+    return img_base64
 
-    # Encode PNG to base64
-    image_base64 = base64.b64encode(buf.read()).decode()
 
-    # Return as JSON
-    return jsonify({"image": image_base64})
+# === FLASK API ENDPOINT ===
+@app.route("/generate", methods=["POST"])
+def handle_generate():
+    """
+    This is the API endpoint that the Flutter app will call.
+    It receives the JSON report data, generates the plot,
+    and returns the Base64-encoded image.
+    """
+    try:
+        # Get the JSON data from the request body
+        report_data = request.json
+        if not report_data:
+            return jsonify({"error": "No JSON data received"}), 400
 
-# --- Main server runner ---
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+        # Generate the plot
+        base64_image_string = create_geology_plot(report_data)
 
+        # Return the image in the format the app expects
+        return jsonify({
+            "image": base64_image_string
+        })
+
+    except Exception as e:
+        print(f"Error generating plot: {e}") # Log the error to the console
+        return jsonify({"error": str(e)}), 500
+
+# === RUN THE SERVER ===
+if __name__ == '__main__':
+    # Runs the server on localhost:5000
+    # For production (like on Render), a Gunicorn server is used instead
+    app.run(debug=True, host='0.0.0.0', port=5000)
